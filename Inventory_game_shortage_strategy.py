@@ -716,8 +716,8 @@ TARGET_FILL_RATE_PERCENT = 85.0
 FILL_RATE_PENALTY_PER_PERCENT = 100.0
 OVERSTOCK_PENALTY_PER_UNIT = 20.0
 
-BIGQUERY_SCRIPT_URL_PLACEHOLDER = "https://script.google.com/macros/s/AKfycbwvAwn4xdYarourBnqqZhzc8eokVAq4uEweITj-7Uy1vnP1moxyq9jzpCx_i5ddR_b_/exec"
-BIGQUERY_SCRIPT_URL = BIGQUERY_SCRIPT_URL_PLACEHOLDER
+BIGQUERY_SCRIPT_URL_PLACEHOLDER = "PASTE_YOUR_BIGQUERY_APPS_SCRIPT_WEB_APP_URL_HERE"
+BIGQUERY_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwvAwn4xdYarourBnqqZhzc8eokVAq4uEweITj-7Uy1vnP1moxyq9jzpCx_i5ddR_b_/exec"
 ADMIN_REPORT_EMAIL = "mohsen.adelfar@hiab.com"
 
 
@@ -1360,7 +1360,9 @@ def build_inventory_position_rop_svg():
 
 
 def submit_result_to_bigquery_endpoint(payload):
-    response = requests.post(
+    session = requests.Session()
+    session.trust_env = False
+    response = session.post(
         BIGQUERY_SCRIPT_URL,
         json=payload,
         timeout=10
@@ -2982,7 +2984,8 @@ if (
                 endpoint_error = response_json.get("error") if response_json else response.text[:500]
                 st.session_state.submission_warning = (
                     "The report was generated, but BigQuery submission did not confirm success. "
-                    f"Please check the Apps Script BigQuery deployment and permissions. Endpoint response: {endpoint_error}"
+                    f"HTTP status: {response.status_code}. Please check the Apps Script BigQuery deployment and permissions. "
+                    f"Endpoint response: {endpoint_error}"
                 )
 
         except Exception as e:
