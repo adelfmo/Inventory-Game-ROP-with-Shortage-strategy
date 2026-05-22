@@ -5,6 +5,7 @@ import altair as alt
 import textwrap
 import requests
 import re
+from datetime import datetime, timezone
 from html import escape as html_escape
 from streamlit.components.v1 import html
 
@@ -213,6 +214,46 @@ st.markdown("""
 
     .scorecard-row strong {
         color: #ffffff;
+    }
+
+    .penalty-overview-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin: 12px 0 16px;
+    }
+
+    .penalty-card {
+        border: 1px solid rgba(255,223,107,0.28);
+        border-radius: 16px;
+        padding: 14px 16px;
+        background: linear-gradient(135deg, rgba(31,43,86,0.95), rgba(8,17,43,0.94));
+        box-shadow: 0 12px 28px rgba(0,0,0,0.22);
+    }
+
+    .penalty-card.player {
+        border-color: rgba(255,223,107,0.58);
+        background: linear-gradient(135deg, rgba(68,38,18,0.96), rgba(8,17,43,0.94));
+    }
+
+    .penalty-card-title {
+        color: #ffffff;
+        font-size: 1rem;
+        font-weight: 900;
+    }
+
+    .penalty-card-value {
+        color: #ffdf6b;
+        font-size: 2.2rem;
+        font-weight: 950;
+        line-height: 1.05;
+        margin-top: 8px;
+    }
+
+    .penalty-card-note {
+        color: #d8def7;
+        font-size: 0.88rem;
+        margin-top: 8px;
     }
 
     .chart-panel {
@@ -511,7 +552,7 @@ st.markdown("""
 
 class Config:
     def __init__(self):
-        self.months = 18
+        self.months = 12
 
         # Item-specific planning parameters
         self.item_planning_parameters = {
@@ -532,25 +573,39 @@ class Config:
             "Item 1 - Slow / uncertain spare part": [2, 0, 0, 5, 2, 0, 1, 0, 0, 8, 0, 1],
             "Item 2 - Stable / high sales item": [26, 28, 27, 30, 29, 31, 28, 27, 30, 29, 28, 31],
         }
+        self.slow_uncertain_demand_ranges = [
+            0,
+            (2, 3),
+            (1, 2),
+            (9, 10),
+            (7, 8),
+            (5, 6),
+            0,
+            (3, 4),
+            (6, 7),
+            (2, 3),
+            (1, 2),
+            0,
+        ]
 
         # Changing lead time logic:
         # Month 1-2 = 1 month
-        # Month 3-8 = 3 months
-        # Month 9+  = 1 month
+        # Month 3-7 = 3 months
+        # Month 8+  = 1 month
         self.initial_lead_time = 1
         self.shock_month = 3
         self.shocked_lead_time = 3
         self.partial_recovery_month = 7
         self.partial_recovery_lead_time = 2
-        self.full_recovery_month = 9
+        self.full_recovery_month = 8
         self.recovered_lead_time = 1
 
         self.random_seed = 42
 
         self.holding_cost_per_unit = 5.0
         self.backlog_cost_per_unit = 20.0
-        self.supplier_agreement_monthly_fee = 120.0
-        self.air_freight_cost_per_unit = 65.0
+        self.supplier_agreement_monthly_fee = 50.0
+        self.air_freight_cost_per_unit = 35.0
 
         self.items = {
             "Item 1 - Slow / uncertain spare part": {
@@ -575,14 +630,14 @@ class Config:
                 "item": "Item 1 - Slow / uncertain spare part",
                 "lead_time_mode": "changing",
                 "title": "Round 2 - supplier agreement",
-                "intro": "You chose a supplier agreement. The market lead time can still be shocked, but the supplier keeps reserved stock for us so our effective replenishment lead time stays at 1 month. The supplier charges 120 per month, included in total cost.",
+                "intro": "You chose a supplier agreement. The market lead time can still be shocked, but the supplier keeps reserved stock for us so our effective replenishment lead time stays at 1 month. The supplier charges 50 per month, included in total cost.",
                 "cost_strategy": "supplier_agreement",
             },
             {
                 "item": "Item 1 - Slow / uncertain spare part",
                 "lead_time_mode": "changing",
                 "title": "Round 2 - air freight",
-                "intro": "You chose air freight. When the normal lead time is shocked to 3 months, every replenishment PO is expedited so the effective lead time stays at 1 month. Air freight costs 65 per expedited PO unit and is included in total cost.",
+                "intro": "You chose air freight. When the normal lead time is shocked to 3 months, every replenishment PO is expedited so the effective lead time becomes 1 month. It is not instant replenishment: an order placed this month arrives next month. Air freight costs 35 per expedited PO unit and is included in total cost.",
                 "cost_strategy": "air_freight",
             },
         ]
@@ -610,31 +665,10 @@ class Config:
         rng = random.Random(self.random_seed + month)
 
         if demand_type == "slow_uncertain":
-            # 2026 demand pattern for the game.
-            # Mostly 0-8 units, with one exceptional one-off demand spike.
-            demand_pattern = {
-                1: 0,
-                2: 2,
-                3: 0,
-                4: 5,
-                5: 1,
-                6: 0,
-                7: 14,   # exceptional one-off demand
-                8: 0,
-                9: 3,
-                10: 0,
-                11: 8,
-                12: 0,
-                13: 1,
-                14: 0,
-                15: 4,
-                16: 0,
-                17: 2,
-                18: 0,
-                19: 7,
-                20: 1,
-            }
-            return demand_pattern.get(month, 0)
+            demand_value = self.slow_uncertain_demand_ranges[month - 1] if 1 <= month <= len(self.slow_uncertain_demand_ranges) else 0
+            if isinstance(demand_value, tuple):
+                return rng.choice(list(range(demand_value[0], demand_value[1] + 1)))
+            return demand_value
 
         if demand_type == "stable_high":
             # More challenging high-volume demand pattern with seasonality and spikes.
@@ -662,15 +696,29 @@ class Config:
 
         return 0
 
+    def sample_demand_series(self, item_name):
+        demand_type = self.items[item_name]["demand_type"]
+        if demand_type == "slow_uncertain":
+            rng = random.SystemRandom()
+            values = []
+            for demand_value in self.slow_uncertain_demand_ranges[:self.months]:
+                if isinstance(demand_value, tuple):
+                    values.append(rng.randint(demand_value[0], demand_value[1]))
+                else:
+                    values.append(demand_value)
+            return values
+        return [self.demand(month, item_name) for month in range(1, self.months + 1)]
+
 
 cfg = Config()
-APP_VERSION = "slow_mover_round2_penalty_comparison_v1"
+APP_VERSION = "slow_mover_random_ranges_no_old_endpoint_v1"
 TARGET_FILL_RATE_PERCENT = 85.0
 FILL_RATE_PENALTY_PER_PERCENT = 100.0
 OVERSTOCK_PENALTY_PER_UNIT = 20.0
 
-GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzyMcy9xsukOHABT-mq0YtUcEqSKYUiV3H2QYChicvCauWmn7s2oUdkrdd1Gp5qDVRi/exec"
-GOOGLE_SCRIPT_URL_PLACEHOLDER = "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE"
+BIGQUERY_SCRIPT_URL_PLACEHOLDER = "https://script.google.com/macros/s/AKfycbwvAwn4xdYarourBnqqZhzc8eokVAq4uEweITj-7Uy1vnP1moxyq9jzpCx_i5ddR_b_/exec"
+BIGQUERY_SCRIPT_URL = BIGQUERY_SCRIPT_URL_PLACEHOLDER
+ADMIN_REPORT_EMAIL = "mohsen.adelfar@hiab.com"
 
 
 # =========================================================
@@ -692,6 +740,7 @@ def init_game():
     st.session_state.backlog = 0
     st.session_state.cumulative_cost = 0.0
     st.session_state.history = []
+    st.session_state.game_demand = cfg.sample_demand_series(selected_item)
     st.session_state.submitted = False
     st.session_state.current_rop = cfg.get_item_initial_rop(selected_item)
     st.session_state.scenario_notice_seen = False
@@ -766,6 +815,8 @@ if migrating_to_variant_flow and st.session_state.get("player_ready", False):
 
 if "month" not in st.session_state:
     init_game()
+if "game_demand" not in st.session_state:
+    st.session_state.game_demand = cfg.sample_demand_series(st.session_state.selected_item)
 
 # =========================================================
 # SECTION 4: HELPERS
@@ -808,7 +859,9 @@ def current_cost_strategy():
 
 def effective_lead_time_for_strategy(base_lead_time, cost_strategy=None):
     strategy = cost_strategy if cost_strategy is not None else current_cost_strategy()
-    if strategy in ("supplier_agreement", "air_freight"):
+    if strategy == "supplier_agreement":
+        return 1
+    if strategy == "air_freight" and base_lead_time > 1:
         return 1
     return base_lead_time
 
@@ -822,7 +875,8 @@ def strategy_cost_explanation(cost_strategy=None):
         )
     if strategy == "air_freight":
         return (
-            f"Air freight: when normal lead time increases to 3 months, replenishment POs are expedited to 1 month. "
+            f"Air freight: only during the 3-month lead-time shock, replenishment POs are expedited to a 1-month lead time. "
+            f"It is not instant replenishment: an order placed this month arrives next month. "
             f"Cost = {cfg.air_freight_cost_per_unit:,.0f} per expedited PO unit, added to total cost in that month."
         )
     return "No extra strategy cost. Total cost includes inventory holding cost and backlog cost."
@@ -839,7 +893,7 @@ def second_round_options():
         (
             2,
             "Air freight",
-            "Use air freight only when the normal lead time is shocked. Replenishment POs still arrive after 1 month, not immediately, and air-freight cost is charged per expedited PO unit.",
+            "Use air freight only when the normal lead time is shocked to 3 months. Replenishment POs arrive after 1 month, not immediately, and air-freight cost is charged per expedited PO unit.",
             strategy_cost_explanation("air_freight"),
         ),
     ]
@@ -903,9 +957,9 @@ def calculate_actual_stockmax_benchmark(df):
 
 def results_submission_configured():
     return (
-        GOOGLE_SCRIPT_URL
-        and GOOGLE_SCRIPT_URL != GOOGLE_SCRIPT_URL_PLACEHOLDER
-        and GOOGLE_SCRIPT_URL.startswith("http")
+        BIGQUERY_SCRIPT_URL
+        and BIGQUERY_SCRIPT_URL != BIGQUERY_SCRIPT_URL_PLACEHOLDER
+        and BIGQUERY_SCRIPT_URL.startswith("http")
     )
 
 
@@ -917,7 +971,7 @@ def get_lead_time_alert(month, lead_time_mode=None):
     if strategy == "supplier_agreement":
         mitigation_note = " Supplier agreement keeps your effective replenishment lead time at 1 month."
     elif strategy == "air_freight":
-        mitigation_note = " Air freight keeps expedited replenishment POs at 1 month when the market is shocked."
+        mitigation_note = " Air freight applies only during this shock and makes replenishment arrive next month, not instantly."
     if month == cfg.shock_month:
         return {
             "kind": "increase",
@@ -962,7 +1016,8 @@ def render_node_html(title, subtitle, qty, icon, border_color):
     """
 
 
-def render_inventory_block_html(on_hand_qty, inventory_position_qty, border_color="#1fd0c1"):
+def render_inventory_block_html(available_to_serve_qty, ending_on_hand_qty, inventory_position_qty, border_color="#1fd0c1"):
+    on_hand_qty = ending_on_hand_qty
     on_hand_icons = grouped_icons_html(on_hand_qty, icon="🔩")
     position_icons = grouped_icons_html(inventory_position_qty, icon="📍")
     return f"""
@@ -996,6 +1051,46 @@ def render_inventory_block_html(on_hand_qty, inventory_position_qty, border_colo
     """
 
 
+def render_inventory_timing_block_html(available_to_serve_qty, ending_on_hand_qty, inventory_position_qty, border_color="#1fd0c1"):
+    available_icons = grouped_icons_html(available_to_serve_qty, icon="o")
+    ending_icons = grouped_icons_html(ending_on_hand_qty, icon="o")
+    position_icons = grouped_icons_html(inventory_position_qty, icon=".")
+    return f"""
+        <div class="node" style="
+            border: 2px solid {border_color};
+            border-radius: 18px;
+            padding: 14px;
+            min-height: 220px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(15,20,32,0.96), rgba(10,14,26,0.96));
+            position: relative;
+            z-index: 2;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+        ">
+            <div style="font-size: 1.9rem; font-weight: 800; margin-bottom: 4px; color: #ffffff;">Warehouse</div>
+            <div style="color: #ffffff; font-size: 0.88rem; margin-bottom: 12px;">Receive first, serve demand, then reorder</div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;">
+                <div style="border:1px solid rgba(255,255,255,0.12); border-radius:14px; padding:10px; background:rgba(255,255,255,0.06);">
+                    <div style="font-size:0.78rem; color:#ffffff; font-weight:700;">Available Before Demand</div>
+                    <div style="font-size:1.45rem; min-height:46px; line-height:1.4; margin-top:6px;">{available_icons}</div>
+                    <div style="font-size:2rem; font-weight:900; margin-top:6px; color:#ffffff;">{available_to_serve_qty}</div>
+                </div>
+                <div style="border:1px solid rgba(255,255,255,0.12); border-radius:14px; padding:10px; background:rgba(255,255,255,0.06);">
+                    <div style="font-size:0.78rem; color:#ffffff; font-weight:700;">Ending On Hand</div>
+                    <div style="font-size:1.45rem; min-height:46px; line-height:1.4; margin-top:6px;">{ending_icons}</div>
+                    <div style="font-size:2rem; font-weight:900; margin-top:6px; color:#ffffff;">{ending_on_hand_qty}</div>
+                </div>
+                <div style="border:1px solid rgba(255,255,255,0.12); border-radius:14px; padding:10px; background:rgba(255,255,255,0.06);">
+                    <div style="font-size:0.78rem; color:#ffffff; font-weight:700;">Position After Order</div>
+                    <div style="font-size:1.45rem; min-height:46px; line-height:1.4; margin-top:6px;">{position_icons}</div>
+                    <div style="font-size:2rem; font-weight:900; margin-top:6px; color:#ffffff;">{inventory_position_qty}</div>
+                </div>
+            </div>
+        </div>
+    """
+
+
 def build_combined_demand_svg(item_name, compact=False):
     """
     Combined demand chart:
@@ -1006,7 +1101,10 @@ def build_combined_demand_svg(item_name, compact=False):
     """
     historical_2025 = cfg.item_last_year_demand[item_name]
     played_months = min(len(st.session_state.history), cfg.months)
-    actual_game_demand = [cfg.demand(m, item_name) for m in range(1, played_months + 1)]
+    if item_name == st.session_state.get("selected_item") and "game_demand" in st.session_state:
+        actual_game_demand = st.session_state.game_demand[:played_months]
+    else:
+        actual_game_demand = [cfg.demand(m, item_name) for m in range(1, played_months + 1)]
 
     labels_2025 = [f"{m}25" for m in MONTH_NAMES_12]
 
@@ -1261,9 +1359,9 @@ def build_inventory_position_rop_svg():
     """
 
 
-def submit_result_to_google_sheet(payload):
+def submit_result_to_bigquery_endpoint(payload):
     response = requests.post(
-        GOOGLE_SCRIPT_URL,
+        BIGQUERY_SCRIPT_URL,
         json=payload,
         timeout=10
     )
@@ -1285,7 +1383,10 @@ def run_month(player_rop):
     st.session_state.pipeline = [x for x in st.session_state.pipeline if x["arrival"] != month]
 
     # 2. Demand happens and backlog from earlier months must also be served.
-    new_demand = cfg.demand(month, item_name)
+    if "game_demand" in st.session_state and month <= len(st.session_state.game_demand):
+        new_demand = st.session_state.game_demand[month - 1]
+    else:
+        new_demand = cfg.demand(month, item_name)
     backlog_before = st.session_state.backlog
     total_customer_need = new_demand + backlog_before
 
@@ -1386,7 +1487,7 @@ def run_month(player_rop):
     return row
 
 
-def simulate_fixed_rop_policy(item_name, lead_time_mode, fixed_rop, cost_strategy="none"):
+def simulate_fixed_rop_policy(item_name, lead_time_mode, fixed_rop, cost_strategy="none", demand_series=None):
     inventory = cfg.get_item_initial_inventory(item_name)
     pipeline = []
     backlog = 0
@@ -1399,7 +1500,10 @@ def simulate_fixed_rop_policy(item_name, lead_time_mode, fixed_rop, cost_strateg
         incoming = sum(x["qty"] for x in pipeline if x["arrival"] == month)
         pipeline = [x for x in pipeline if x["arrival"] != month]
 
-        new_demand = cfg.demand(month, item_name)
+        if demand_series is not None and month <= len(demand_series):
+            new_demand = demand_series[month - 1]
+        else:
+            new_demand = cfg.demand(month, item_name)
         backlog_before = backlog
         total_customer_need = new_demand + backlog_before
         inventory_after_incoming = inventory + incoming
@@ -1506,8 +1610,9 @@ def summarize_performance(df, label):
 def build_performance_report(player_history, item_name, lead_time_mode, cost_strategy="none"):
     player_df = pd.DataFrame(player_history).copy()
     player_df["Policy"] = "Player"
-    baseline_4_df = simulate_fixed_rop_policy(item_name, lead_time_mode, 4, cost_strategy)
-    baseline_12_df = simulate_fixed_rop_policy(item_name, lead_time_mode, 12, cost_strategy)
+    demand_series = player_df["New Demand"].tolist()
+    baseline_4_df = simulate_fixed_rop_policy(item_name, lead_time_mode, 4, cost_strategy, demand_series)
+    baseline_12_df = simulate_fixed_rop_policy(item_name, lead_time_mode, 12, cost_strategy, demand_series)
 
     summary = pd.DataFrame([
         summarize_performance(player_df, "Player"),
@@ -1531,8 +1636,8 @@ def render_scorecards(summary):
         cards.append(
             f'<div class="scorecard{player_class}">'
             f'<div class="scorecard-policy">{row["Policy"]}</div>'
-            f'<div class="scorecard-row"><span>Total Cost</span><strong>{row["Total Cost"]:,.0f}</strong></div>'
             f'<div class="scorecard-row"><span>Penalty Points</span><strong>{row["Total Penalty"]:,.0f}</strong></div>'
+            f'<div class="scorecard-row"><span>Total Cost</span><strong>{row["Total Cost"]:,.0f}</strong></div>'
             f'<div class="scorecard-row"><span>Fill Rate</span><strong>{row["Fill Rate"]:.1f}%</strong></div>'
             f'<div class="scorecard-row"><span>Ending Stock</span><strong>{row["Ending Inventory"]:,.0f}</strong></div>'
             f'<div class="scorecard-row"><span>Avg Stock</span><strong>{row["Average Stock"]:.1f}</strong></div>'
@@ -1541,6 +1646,104 @@ def render_scorecards(summary):
         )
 
     return f'<div class="scorecard-grid">{"".join(cards)}</div>'
+
+
+def render_penalty_overview(summary, variant_index, completed_reports):
+    cards = []
+    if variant_index == 0:
+        rows = summary.to_dict("records")
+        best_penalty = min(row["Total Penalty"] for row in rows)
+        for row in rows:
+            is_player = row["Policy"] == "Player"
+            gap = row["Total Penalty"] - best_penalty
+            note = "Best penalty score in this comparison." if gap == 0 else f"{gap:,.0f} points above the best score."
+            cards.append(
+                f'<div class="penalty-card{" player" if is_player else ""}">'
+                f'<div class="penalty-card-title">{row["Policy"]}</div>'
+                f'<div class="penalty-card-value">{row["Total Penalty"]:,.0f}</div>'
+                f'<div class="penalty-card-note">Penalty points = total cost + penalties.</div>'
+                f'<div class="penalty-card-note">{note}</div>'
+                f'</div>'
+            )
+        title = "Penalty comparison: player vs ROP baselines"
+    else:
+        current = summary[summary["Policy"] == "Player"].iloc[0].to_dict()
+        round_1 = completed_reports[0] if completed_reports else None
+        rows = []
+        if round_1:
+            rows.append(round_1)
+        rows.append(current | {"Round": "Round 2", "Scenario": "Current round"})
+        best_penalty = min(row["Total Penalty"] for row in rows)
+        for row in rows:
+            label = row.get("Round", row.get("Policy", "Round"))
+            is_player = label == "Round 2"
+            gap = row["Total Penalty"] - best_penalty
+            note = "Best penalty score between your two rounds." if gap == 0 else f"{gap:,.0f} points above your best round."
+            cards.append(
+                f'<div class="penalty-card{" player" if is_player else ""}">'
+                f'<div class="penalty-card-title">{label}</div>'
+                f'<div class="penalty-card-value">{row["Total Penalty"]:,.0f}</div>'
+                f'<div class="penalty-card-note">{row.get("Scenario", "")}</div>'
+                f'<div class="penalty-card-note">{note}</div>'
+                f'</div>'
+            )
+        title = "Penalty comparison: Round 1 vs Round 2"
+
+    return (
+        '<div class="chart-panel">'
+        f'<div class="chart-title">{title}</div>'
+        '<div class="penalty-overview-grid">'
+        f'{"".join(cards)}'
+        '</div>'
+        '</div>'
+    )
+
+
+def build_round_complete_feedback(summary, variant_index, completed_reports):
+    player = summary[summary["Policy"] == "Player"].iloc[0].to_dict()
+    lines = []
+
+    if player["Fill Rate"] < TARGET_FILL_RATE_PERCENT:
+        gap = TARGET_FILL_RATE_PERCENT - player["Fill Rate"]
+        lines.append(f"You did not achieve the target fill rate of {TARGET_FILL_RATE_PERCENT:.0f}%. You were {gap:.1f} percentage points below target.")
+    else:
+        lines.append(f"You achieved the target fill rate of {TARGET_FILL_RATE_PERCENT:.0f}% with {player['Fill Rate']:.1f}%.")
+
+    if player["Overstock Penalty"] > 0:
+        lines.append(f"Ending stock was above the calculated Stock Max, adding {player['Overstock Penalty']:,.0f} overstock penalty points.")
+    elif player["Inventory Cost"] > player["Backlog Cost"] and player["Fill Rate"] >= TARGET_FILL_RATE_PERCENT:
+        lines.append("You protected service, but inventory cost became the main cost driver. That is the classic service-versus-stock trade-off.")
+    elif player["Backlog Cost"] > 0:
+        lines.append(f"Backlog cost was {player['Backlog Cost']:,.0f}, meaning shortages still hurt the score.")
+    else:
+        lines.append("Backlog was controlled well in this round.")
+
+    if variant_index == 0:
+        baseline_rows = summary[summary["Policy"] != "Player"]
+        best_baseline = baseline_rows.loc[baseline_rows["Total Penalty"].idxmin()].to_dict()
+        player_gap = player["Total Penalty"] - best_baseline["Total Penalty"]
+        if player_gap <= 0:
+            lines.append(f"Your penalty points were {abs(player_gap):,.0f} better than the best fixed baseline ({best_baseline['Policy']}).")
+        else:
+            lines.append(f"Your penalty points were {player_gap:,.0f} higher than the best fixed baseline ({best_baseline['Policy']}).")
+        lines.append(
+            "Penalty comparison: "
+            f"Player {player['Total Penalty']:,.0f}, "
+            f"ROP 4 {summary.loc[summary['Policy'] == 'Baseline ROP 4', 'Total Penalty'].iloc[0]:,.0f}, "
+            f"ROP 12 {summary.loc[summary['Policy'] == 'Baseline ROP 12', 'Total Penalty'].iloc[0]:,.0f}."
+        )
+    elif completed_reports:
+        round_1 = completed_reports[0]
+        delta = player["Total Penalty"] - round_1["Total Penalty"]
+        if delta < 0:
+            lines.append(f"Round 2 improved your penalty score by {abs(delta):,.0f} points compared with round 1.")
+        elif delta > 0:
+            lines.append(f"Round 2 added {delta:,.0f} more penalty points than round 1.")
+        else:
+            lines.append("Round 2 matched your round 1 penalty score.")
+        lines.append(f"Round 1 penalty points: {round_1['Total Penalty']:,.0f}. Round 2 penalty points: {player['Total Penalty']:,.0f}.")
+
+    return lines
 
 
 def render_report_table(summary):
@@ -1678,6 +1881,99 @@ def build_email_report_html(summary, player_name, player_email, scenario_title, 
     """
 
 
+def bq_value(value):
+    if pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def build_bigquery_rows(history_df, report_summary, submission_key, submitted_at_utc):
+    player_round = "Round 1" if st.session_state.variant_index == 0 else "Round 2"
+    base_fields = {
+        "submission_id": submission_key,
+        "submitted_at": submitted_at_utc,
+        "player_name": st.session_state.player_name,
+        "player_email": st.session_state.player_email,
+        "scenario_number": int(st.session_state.variant_index + 1),
+        "round_label": player_round,
+        "scenario": st.session_state.scenario_title,
+        "item": st.session_state.selected_item,
+        "lead_time_mode": current_lead_time_mode(),
+        "cost_strategy": current_cost_strategy(),
+    }
+
+    overall_rows = []
+    for row in report_summary.to_dict("records"):
+        overall_rows.append({
+            **base_fields,
+            "policy": row["Policy"],
+            "months_played": int(len(history_df)),
+            "final_rop": int(st.session_state.current_rop),
+            "eoq": int(cfg.get_item_eoq(st.session_state.selected_item)),
+            "average_stock": float(row["Average Stock"]),
+            "average_pipeline": float(row["Average Pipeline"]),
+            "ending_inventory": float(row["Ending Inventory"]),
+            "final_stock_max": float(row["Final Stock Max"]),
+            "actual_average_monthly_demand": float(row["Actual Average Monthly Demand"]),
+            "actual_end_lead_time": float(row["Actual End Lead Time"]),
+            "actual_demand_std_dev": float(row["Actual Demand Std Dev"]),
+            "actual_safety_stock": float(row["Actual Safety Stock"]),
+            "actual_rop_85": float(row["Actual ROP 85"]),
+            "inventory_cost": float(row["Inventory Cost"]),
+            "backlog_cost": float(row["Backlog Cost"]),
+            "supplier_agreement_cost": float(row["Supplier Agreement Cost"]),
+            "air_freight_cost": float(row["Air Freight Cost"]),
+            "total_cost": float(row["Total Cost"]),
+            "cost_points": float(row["Cost Points"]),
+            "fill_rate_pct": float(row["Fill Rate"]),
+            "fill_rate_penalty": float(row["Fill Rate Penalty"]),
+            "excess_inventory_units": float(row["Excess Inventory Units"]),
+            "overstock_penalty": float(row["Overstock Penalty"]),
+            "total_penalty_points": float(row["Total Penalty"]),
+        })
+
+    detail_rows = []
+    for row in history_df.to_dict("records"):
+        detail_rows.append({
+            **base_fields,
+            "policy": "Player",
+            "month_number": int(row["Month"]),
+            "calendar_month": row["Calendar Month"],
+            "lead_time": int(row["Lead Time"]),
+            "effective_lead_time": int(row["Effective Lead Time"]),
+            "rop_used": int(row["ROP Used"]),
+            "eoq": int(row["EOQ"]),
+            "stock_max": int(row["Stock Max"]),
+            "starting_inventory": int(row["Starting Inventory"]),
+            "incoming_purchases": int(row["Incoming Purchases"]),
+            "inventory_after_incoming": int(row["Inventory After Incoming"]),
+            "new_demand": int(row["New Demand"]),
+            "backlog_from_previous_month": int(row["Backlog From Previous Month"]),
+            "total_customer_need": int(row["Total Customer Need"]),
+            "fulfilled": int(row["Fulfilled"]),
+            "backlog_this_period": int(row["Backlog This Period"]),
+            "ending_backlog": int(row["Ending Backlog"]),
+            "ending_inventory": int(row["Ending Inventory"]),
+            "inventory_position_before_order": int(row["Inventory Position Before Order"]),
+            "reorder_triggered": row["Reorder Triggered"],
+            "po_placed": int(row["PO Placed"]),
+            "po_arrival_month": str(row["PO Arrival Month"]),
+            "pipeline": int(row["Pipeline"]),
+            "inventory_position_after_order": int(row["Inventory Position After Order"]),
+            "inventory_holding_cost": float(row["Inventory Holding Cost"]),
+            "backlog_cost": float(row["Backlog Cost"]),
+            "supplier_agreement_cost": float(row.get("Supplier Agreement Cost", 0)),
+            "air_freight_units": int(row.get("Air Freight Units", 0)),
+            "air_freight_cost": float(row.get("Air Freight Cost", 0)),
+            "month_total_cost": float(row["Month Total Cost"]),
+            "cumulative_total_cost": float(row["Cumulative Total Cost"]),
+        })
+
+    return overall_rows, detail_rows
+
+
 def make_metric_bar_chart(summary, metric_columns, metric_colors, y_title):
     chart_df = summary.melt(
         id_vars="Policy",
@@ -1746,7 +2042,7 @@ def make_round_comparison_chart(completed_df):
         compare_df["Round"] = [f"Round {idx + 1}" for idx in range(len(compare_df))]
     chart_df = compare_df.melt(
         id_vars=["Round", "Scenario"],
-        value_vars=["Average Stock", "Total Penalty", "Fill Rate"],
+        value_vars=["Total Penalty", "Average Stock", "Fill Rate"],
         var_name="Metric",
         value_name="Value",
     )
@@ -1837,7 +2133,8 @@ def animate_month(row):
         "#7e57ff"
     )
 
-    inventory_node = render_inventory_block_html(
+    inventory_node = render_inventory_timing_block_html(
+        row["Inventory After Incoming"],
         row["Ending Inventory"],
         row["Inventory Position After Order"],
         "#1fd0c1"
@@ -2168,7 +2465,7 @@ def animate_month(row):
                     {inventory_node}
                     <div class="mini-grid-3">
                         <div class="mini">
-                            <div class="mini-label">Ending Warehouse Stock</div>
+                            <div class="mini-label">Ending Stock After Demand</div>
                             <div class="mini-value">{row["Ending Inventory"]}</div>
                         </div>
                         <div class="mini">
@@ -2353,9 +2650,9 @@ if current_lead_time_mode() == "constant":
 elif current_cost_strategy() == "supplier_agreement":
     lead_time_rule_text = "Market lead time can change, but the supplier agreement keeps effective replenishment lead time at 1 month."
 elif current_cost_strategy() == "air_freight":
-    lead_time_rule_text = "Market lead time can change, but air freight expedites replenishment POs to an effective lead time of 1 month during the shock."
+    lead_time_rule_text = "Market lead time can change. Air freight only applies during the 3-month lead-time shock and changes replenishment PO lead time to 1 month, not instant delivery."
 else:
-    lead_time_rule_text = "Lead time: Month 1-2 = 1 month, Month 3-8 = 3 months, Month 9-18 = 1 month."
+    lead_time_rule_text = "Lead time: Month 1-2 = 1 month, Month 3-7 = 3 months, Month 8-12 = 1 month."
 
 strategy_cost_text = {
     "supplier_agreement": strategy_cost_explanation("supplier_agreement"),
@@ -2614,10 +2911,24 @@ if (
         current_lead_time_mode(),
         current_cost_strategy(),
     )
+    submitted_at_utc = datetime.now(timezone.utc).isoformat()
+    overall_rows, detail_rows = build_bigquery_rows(
+        df,
+        report_summary,
+        submission_key,
+        submitted_at_utc,
+    )
 
     payload = {
+        "destination": "bigquery",
+        "overall_table": "inventory_game_round_results",
+        "detail_table": "inventory_game_monthly_details",
+        "submitted_at": submitted_at_utc,
         "player_name": st.session_state.player_name,
         "player_email": st.session_state.player_email,
+        "player_report_email": st.session_state.player_email,
+        "admin_report_email": ADMIN_REPORT_EMAIL,
+        "email_recipients": [st.session_state.player_email, ADMIN_REPORT_EMAIL],
         "item": st.session_state.selected_item,
         "scenario": st.session_state.scenario_title,
         "scenario_number": st.session_state.variant_index + 1,
@@ -2633,6 +2944,8 @@ if (
         "months_played": len(st.session_state.history),
         "final_rop": int(st.session_state.current_rop),
         "eoq": cfg.get_item_eoq(st.session_state.selected_item),
+        "overall_rows": overall_rows,
+        "detail_rows": detail_rows,
         "report_summary": report_summary.to_dict("records"),
         "report_html": build_email_report_html(
             report_summary,
@@ -2647,33 +2960,36 @@ if (
     if not results_submission_configured():
         st.session_state.submitted = True
         st.session_state.submitted_scenario_keys.append(submission_key)
-        st.info("Result submission is not configured yet, so this run was kept local.")
+        st.info("BigQuery submission is not configured yet, so this run was kept local.")
     else:
         try:
-            response = submit_result_to_google_sheet(payload)
-            response_ok = response.status_code == 200
+            response = submit_result_to_bigquery_endpoint(payload)
+            response_json = {}
+            response_ok = False
             try:
-                response_ok = response_ok and response.json().get("ok", True)
+                response_json = response.json()
+                response_ok = response.status_code == 200 and response_json.get("ok") is True
             except ValueError:
-                pass
+                response_ok = False
 
             if response_ok:
                 st.session_state.submitted = True
                 st.session_state.submitted_scenario_keys.append(submission_key)
-                st.success("Your result has been submitted.")
+                st.success("Your result has been submitted to BigQuery.")
             else:
                 st.session_state.submitted = True
                 st.session_state.submitted_scenario_keys.append(submission_key)
+                endpoint_error = response_json.get("error") if response_json else response.text[:500]
                 st.session_state.submission_warning = (
-                    "The report was generated, but Google Sheets submission did not confirm success. "
-                    "Please check the Apps Script deployment and permissions."
+                    "The report was generated, but BigQuery submission did not confirm success. "
+                    f"Please check the Apps Script BigQuery deployment and permissions. Endpoint response: {endpoint_error}"
                 )
 
         except Exception as e:
             st.session_state.submitted = True
             st.session_state.submitted_scenario_keys.append(submission_key)
             st.session_state.submission_warning = (
-                "The report was generated, but this computer could not connect to Google Sheets. "
+                "The report was generated, but this computer could not connect to the BigQuery submission endpoint. "
                 "This usually happens when Python cannot reach script.google.com through the local network or proxy."
             )
 
@@ -2692,12 +3008,28 @@ if st.session_state.history and st.session_state.month > cfg.months:
             st.session_state.second_round_popup_step = "briefing" if hasattr(st, "dialog") else "inline"
             st.rerun()
 
+    report_summary, report_trends = build_performance_report(
+        st.session_state.history,
+        st.session_state.selected_item,
+        current_lead_time_mode(),
+        current_cost_strategy(),
+    )
+
     if not st.session_state.get("round_complete_seen", False):
         if hasattr(st, "dialog"):
             @st.dialog("Round complete!")
             def show_round_complete():
                 st.markdown("## 🎉 Round is complete")
-                st.markdown("Review the result report, then click the tall colorful **Continue to next game** ribbon on the right.")
+                for feedback_line in build_round_complete_feedback(
+                    report_summary,
+                    st.session_state.variant_index,
+                    st.session_state.completed_reports,
+                ):
+                    st.markdown(f"- {feedback_line}")
+                if st.session_state.variant_index == 0:
+                    st.markdown("Review the result report, then click the tall colorful **Open Round 2** ribbon on the right.")
+                else:
+                    st.markdown("Review the result report below. The top KPI block compares this round with your first round.")
                 if st.button("Show my results", type="primary", use_container_width=True):
                     st.session_state.round_complete_seen = True
                     st.balloons()
@@ -2707,13 +3039,6 @@ if st.session_state.history and st.session_state.month > cfg.months:
         else:
             st.session_state.round_complete_seen = True
             st.balloons()
-
-    report_summary, report_trends = build_performance_report(
-        st.session_state.history,
-        st.session_state.selected_item,
-        current_lead_time_mode(),
-        current_cost_strategy(),
-    )
 
     if not st.session_state.get("report_saved_current", False):
         player_summary = report_summary[report_summary["Policy"] == "Player"].iloc[0].to_dict()
@@ -2741,6 +3066,10 @@ if st.session_state.history and st.session_state.month > cfg.months:
         <div class="report-subtitle">Fill rate below {TARGET_FILL_RATE_PERCENT:.0f}% = {FILL_RATE_PENALTY_PER_PERCENT:.0f} points per percentage point. Ending stock above the actual-demand Stock Max = {OVERSTOCK_PENALTY_PER_UNIT:.0f} points per unit.</div>
     </div>
     """, unsafe_allow_html=True)
+    st.markdown(
+        render_penalty_overview(report_summary, st.session_state.variant_index, st.session_state.completed_reports),
+        unsafe_allow_html=True,
+    )
     if st.session_state.variant_index != 0 and len(st.session_state.completed_reports) >= 2:
         completed_df_top = pd.DataFrame(st.session_state.completed_reports)
         if "Round" not in completed_df_top.columns:
