@@ -716,9 +716,8 @@ TARGET_FILL_RATE_PERCENT = 85.0
 FILL_RATE_PENALTY_PER_PERCENT = 100.0
 OVERSTOCK_PENALTY_PER_UNIT = 20.0
 
-BIGQUERY_SCRIPT_URL_PLACEHOLDER = "PASTE_YOUR_BIGQUERY_APPS_SCRIPT_WEB_APP_URL_HERE"
-BIGQUERY_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwvAwn4xdYarourBnqqZhzc8eokVAq4uEweITj-7Uy1vnP1moxyq9jzpCx_i5ddR_b_/exec"
-ADMIN_REPORT_EMAIL = "mohsen.adelfar@hiab.com"
+GOOGLE_SCRIPT_URL_PLACEHOLDER = "PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE"
+GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzyMcy9xsukOHABT-mq0YtUcEqSKYUiV3H2QYChicvCauWmn7s2oUdkrdd1Gp5qDVRi/exec"
 
 
 # =========================================================
@@ -957,9 +956,9 @@ def calculate_actual_stockmax_benchmark(df):
 
 def results_submission_configured():
     return (
-        BIGQUERY_SCRIPT_URL
-        and BIGQUERY_SCRIPT_URL != BIGQUERY_SCRIPT_URL_PLACEHOLDER
-        and BIGQUERY_SCRIPT_URL.startswith("http")
+        GOOGLE_SCRIPT_URL
+        and GOOGLE_SCRIPT_URL != GOOGLE_SCRIPT_URL_PLACEHOLDER
+        and GOOGLE_SCRIPT_URL.startswith("http")
     )
 
 
@@ -1359,11 +1358,11 @@ def build_inventory_position_rop_svg():
     """
 
 
-def submit_result_to_bigquery_endpoint(payload):
+def submit_result_to_google_sheet(payload):
     session = requests.Session()
     session.trust_env = False
     response = session.post(
-        BIGQUERY_SCRIPT_URL,
+        GOOGLE_SCRIPT_URL,
         json=payload,
         timeout=10
     )
@@ -2922,15 +2921,11 @@ if (
     )
 
     payload = {
-        "destination": "bigquery",
-        "overall_table": "inventory_game_round_results",
-        "detail_table": "inventory_game_monthly_details",
+        "destination": "google_sheet",
         "submitted_at": submitted_at_utc,
         "player_name": st.session_state.player_name,
         "player_email": st.session_state.player_email,
         "player_report_email": st.session_state.player_email,
-        "admin_report_email": ADMIN_REPORT_EMAIL,
-        "email_recipients": [st.session_state.player_email, ADMIN_REPORT_EMAIL],
         "item": st.session_state.selected_item,
         "scenario": st.session_state.scenario_title,
         "scenario_number": st.session_state.variant_index + 1,
@@ -2962,29 +2957,29 @@ if (
     if not results_submission_configured():
         st.session_state.submitted = True
         st.session_state.submitted_scenario_keys.append(submission_key)
-        st.info("BigQuery submission is not configured yet, so this run was kept local.")
+        st.info("Google Sheet submission is not configured yet, so this run was kept local.")
     else:
         try:
-            response = submit_result_to_bigquery_endpoint(payload)
+            response = submit_result_to_google_sheet(payload)
             response_json = {}
-            response_ok = False
+            response_ok = response.status_code == 200
             try:
                 response_json = response.json()
-                response_ok = response.status_code == 200 and response_json.get("ok") is True
+                response_ok = response_ok and response_json.get("ok", True)
             except ValueError:
-                response_ok = False
+                pass
 
             if response_ok:
                 st.session_state.submitted = True
                 st.session_state.submitted_scenario_keys.append(submission_key)
-                st.success("Your result has been submitted to BigQuery.")
+                st.success("Your result has been submitted to Google Sheets.")
             else:
                 st.session_state.submitted = True
                 st.session_state.submitted_scenario_keys.append(submission_key)
                 endpoint_error = response_json.get("error") if response_json else response.text[:500]
                 st.session_state.submission_warning = (
-                    "The report was generated, but BigQuery submission did not confirm success. "
-                    f"HTTP status: {response.status_code}. Please check the Apps Script BigQuery deployment and permissions. "
+                    "The report was generated, but Google Sheets submission did not confirm success. "
+                    f"HTTP status: {response.status_code}. Please check the Apps Script deployment and permissions. "
                     f"Endpoint response: {endpoint_error}"
                 )
 
@@ -2992,7 +2987,7 @@ if (
             st.session_state.submitted = True
             st.session_state.submitted_scenario_keys.append(submission_key)
             st.session_state.submission_warning = (
-                "The report was generated, but this computer could not connect to the BigQuery submission endpoint. "
+                "The report was generated, but this computer could not connect to Google Sheets. "
                 "This usually happens when Python cannot reach script.google.com through the local network or proxy."
             )
 
